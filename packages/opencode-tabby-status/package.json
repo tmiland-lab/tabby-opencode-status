@@ -4,7 +4,19 @@
   "description": "Show opencode session status in the terminal tab (title, progress, color) + spool files for the Tabby plugin",
   "type": "module",
   "main": "tabby-status.js",
+  "files": [
+    "tabby-status.js"
+  ],
   "license": "MIT",
+  "author": {
+    "name": "tmiland",
+    "email": "326116980+tmiland@users.noreply.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmiland-lab/tabby-opencode-status.git",
+    "directory": "packages/opencode-tabby-status"
+  },
   "keywords": [
     "opencode",
     "opencode-plugin",

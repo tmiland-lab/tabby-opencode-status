@@ -20,12 +20,18 @@ side, writes `$TMPDIR/tabby-claude-status.d/*.json`).
 
 ## Install
 
+From npm — in Tabby: **Settings → Plugins**, search `tabby-opencode-status`,
+install, then fully restart Tabby. Configure under **Settings → Opencode
+Status** (surfaces, colors, auto-resume, resume command).
+
+From a clone (development):
+
 ```sh
-npm run install-plugin   # build + copy into Tabby's plugin dir
+npm install
+npm run install-plugin   # build dist/ + copy into Tabby's plugin dir
 ```
 
-Restart Tabby. Configure under Settings → Opencode Status (surfaces, colors,
-auto-resume, resume command).
+Restart Tabby.
 
 ## Session restore
 

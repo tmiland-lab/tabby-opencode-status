@@ -7,6 +7,11 @@
     "email": "326116980+tmiland@users.noreply.github.com"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmiland-lab/tabby-opencode-status.git",
+    "directory": "packages/tabby-opencode-status"
+  },
   "keywords": [
     "tabby-plugin",
     "opencode",

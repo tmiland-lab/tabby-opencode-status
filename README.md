@@ -25,21 +25,40 @@ Status mapping (opencode → Tabby):
 opencode v2 does not emit it for ordinary turns — the execution/step lifecycle
 events above are what actually fire.
 
-## Quick start
+## Install
 
-**opencode side** (works today, no Tabby plugin needed for title updates):
+Both halves are on npm.
+
+**opencode side** — `opencode-tabby-status` emits OSC title/progress/color and
+writes the status spool. Add it to `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
-// opencode.json
 { "plugin": ["opencode-tabby-status"] }
 ```
 
-or copy `packages/opencode-tabby-status/tabby-status.js` to
-`~/.config/opencode/plugins/`. Tab titles update live via OSC 0 in any
-terminal (Tabby, Ghostty, WezTerm, Windows Terminal, VS Code, iTerm2).
+opencode installs npm plugins itself; restart it once. Tab titles update live
+via OSC 0 in any terminal (Tabby, Ghostty, WezTerm, Windows Terminal, VS Code,
+iTerm2) even without the Tabby plugin.
 
-**Tabby side** (true tab colors): install `tabby-opencode-status` from
-Tabby Settings → Plugins, restart Tabby.
+**Tabby side** — `tabby-opencode-status` paints true tab colors, progress, and
+the emoji prefix:
+
+1. Tabby → **Settings → Plugins**, search **`tabby-opencode-status`**, install
+2. Fully restart Tabby
+3. Configure under **Settings → Opencode Status**
+
+### From source
+
+```sh
+git clone https://github.com/tmiland-lab/tabby-opencode-status
+
+# opencode plugin — auto-discovered, hot-reloaded
+cp tabby-opencode-status/packages/opencode-tabby-status/tabby-status.js ~/.config/opencode/plugins/
+
+# Tabby plugin — build + copy into Tabby's plugin dir, then restart Tabby
+cd tabby-opencode-status/packages/tabby-opencode-status
+npm install && npm run install-plugin
+```
 
 ## Spool protocol
 

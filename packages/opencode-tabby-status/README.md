@@ -5,13 +5,15 @@ status. Zero dependencies.
 
 ## Install
 
-npm mode (`opencode.json`):
+From npm — add it to your opencode config (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
 { "plugin": ["opencode-tabby-status"] }
 ```
 
-Local file mode:
+opencode installs the package itself; restart it once.
+
+From a clone (local file mode — auto-discovered and hot-reloaded):
 
 ```sh
 cp tabby-status.js ~/.config/opencode/plugins/
