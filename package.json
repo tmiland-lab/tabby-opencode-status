@@ -1,0 +1,13 @@
+{
+  "name": "tabby-opencode-status",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Terminal tab status for opencode inside Tabby (monorepo)",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces"
+  }
+}

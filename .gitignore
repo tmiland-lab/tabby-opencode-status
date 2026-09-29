@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-test/
+*.tgz
+.DS_Store
+
+# Local-only agent docs must never reach the public repo
+AGENTS.md
+.opencode/
+
+# Tabby plugin build output staging
+*.asar
