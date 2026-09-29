@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "node20",
+    "moduleResolution": "node16",
+    "target": "es2022",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "dist-test",
+    "rootDir": "."
+  },
+  "include": [
+    "src/interfaces/**/*.ts",
+    "src/services/**/*.ts",
+    "src/decorator/**/*.ts",
+    "src/tabby/sessionTracker.ts",
+    "src/tabby/bridge.service.ts",
+    "src/tabby/ambient.d.ts",
+    "test/**/*.ts"
+  ]
+}

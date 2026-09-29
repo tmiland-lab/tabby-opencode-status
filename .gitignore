@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-test/
+# stale compiled test artifact (test source is test/run.ts, built to dist-test/)
+packages/tabby-opencode-status/test/run.js
 *.tgz
 .DS_Store
 

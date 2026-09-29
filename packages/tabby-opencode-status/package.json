@@ -1,0 +1,37 @@
+{
+  "name": "tabby-opencode-status",
+  "version": "0.1.0",
+  "description": "Native Tabby plugin: paint tab color / progress / title from opencode session status, with session restore",
+  "author": {
+    "name": "tmiland",
+    "email": "326116980+tmiland@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "tabby-plugin",
+    "opencode",
+    "terminal",
+    "tab-color",
+    "status"
+  ],
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "webpack --config webpack.config.mjs",
+    "test": "npm run typecheck && tsc -p tsconfig.test.json && node dist-test/test/run.js && npm run build && node scripts/smoke-bundle.js",
+    "install-plugin": "npm run build && node scripts/install-plugin.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.5.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.0"
+  },
+  "dependencies": {
+    "reflect-metadata": "^0.2.2"
+  }
+}
