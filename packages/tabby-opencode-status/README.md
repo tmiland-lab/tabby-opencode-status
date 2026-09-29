@@ -20,18 +20,9 @@ side, writes `$TMPDIR/tabby-claude-status.d/*.json`).
 
 ## Install
 
-From npm — in Tabby: **Settings → Plugins**, search `tabby-opencode-status`,
-install, then fully restart Tabby. Configure under **Settings → Opencode
-Status** (surfaces, colors, auto-resume, resume command).
-
-From a clone (development):
-
-```sh
-npm install
-npm run install-plugin   # build dist/ + copy into Tabby's plugin dir
-```
-
-Restart Tabby.
+In Tabby: **Settings → Plugins** → search `tabby-opencode-status` → **Install**,
+then fully restart Tabby. Configure under **Settings → Opencode Status**
+(surfaces, colors, auto-resume, resume command).
 
 ## Session restore
 
@@ -44,8 +35,9 @@ their recorded cwd with the resume command (default `opencode --continue`).
 ## Develop
 
 ```sh
-npm test      # typecheck + framework-free logic tests
-npm run build # UMD bundle in dist/ (Tabby/Angular externals)
+npm test                # typecheck + framework-free logic tests
+npm run build           # UMD bundle in dist/ (Tabby/Angular externals)
+npm run install-plugin  # build + copy into Tabby's plugin dir (local testing)
 ```
 
 `src/interfaces`, `src/services`, `src/decorator`, `src/tabby/sessionTracker.ts`

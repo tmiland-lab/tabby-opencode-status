@@ -5,25 +5,16 @@ status. Zero dependencies.
 
 ## Install
 
-From npm — add it to your opencode config (`~/.config/opencode/opencode.jsonc`):
-
-```jsonc
-{ "plugin": ["opencode-tabby-status"] }
-```
-
-opencode installs the package itself; restart it once.
-
-From a clone (local file mode — auto-discovered and hot-reloaded):
-
 ```sh
-cp tabby-status.js ~/.config/opencode/plugins/
+opencode plugin add opencode-tabby-status
 ```
 
 ## What it does
 
-On `session.status` / `permission.asked` / `form.created` /
-`session.execution.failed` / `session.created` it emits, best-effort (never
-breaks a session):
+On `session.execution.started` / `session.step.started` (working),
+`permission.asked` / `form.created` (needs input), `session.execution.succeeded`
+/ `.interrupted` (done), `session.execution.failed` (error), and
+`session.created` (idle) it emits, best-effort (never breaks a session):
 
 - OSC 0 tab title: `⚡/❓/✅/❌ opencode · <state>` — honored by Tabby,
   Ghostty, WezTerm, Windows Terminal, VS Code, iTerm2
