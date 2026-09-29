@@ -1,6 +1,6 @@
 {
   "name": "tabby-opencode-status",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native Tabby plugin: paint tab color / progress / title from opencode session status, with session restore",
   "author": {
     "name": "tmiland",

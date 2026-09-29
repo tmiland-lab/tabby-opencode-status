@@ -1,6 +1,6 @@
 {
   "name": "opencode-tabby-status",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Show opencode session status in the terminal tab (title, progress, color) + spool files for the Tabby plugin",
   "type": "module",
   "main": "tabby-status.js",
