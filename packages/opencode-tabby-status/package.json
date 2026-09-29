@@ -1,0 +1,22 @@
+{
+  "name": "opencode-tabby-status",
+  "version": "0.1.0",
+  "description": "Show opencode session status in the terminal tab (title, progress, color) + spool files for the Tabby plugin",
+  "type": "module",
+  "main": "tabby-status.js",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tabby",
+    "terminal",
+    "tab-color",
+    "osc"
+  ],
+  "peerDependencies": {
+    "@opencode/plugin": "^2.0.0"
+  },
+  "scripts": {
+    "test": "node --check tabby-status.js && node test/smoke.mjs"
+  }
+}
