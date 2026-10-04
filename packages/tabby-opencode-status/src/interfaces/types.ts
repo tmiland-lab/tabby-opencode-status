@@ -47,6 +47,16 @@ export const DEFAULT_CONFIG: TabbyOpencodeStatusConfig = {
   pollMs: 3000,
 }
 
+// Matches the opencode CLI itself (not a command it happens to run, e.g.
+// `git`), so child-process ancestry can be checked without spawning `ps`.
+export const OPENCODE_CMD_RE = /(^|[/\\])opencode(\s|$)/
+
+// True when any of the given process commands is the opencode CLI.
+export function hasOpencodeProcess(procs: Iterable<string>): boolean {
+  for (const cmd of procs) if (OPENCODE_CMD_RE.test(cmd)) return true
+  return false
+}
+
 // Claude-hook names (also emitted by opencode-tabby-status) -> tab state.
 export function statusForEvent(event: string): OpencodeStatus {
   switch (event) {

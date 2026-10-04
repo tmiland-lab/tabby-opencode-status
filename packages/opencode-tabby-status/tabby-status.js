@@ -24,7 +24,9 @@
 // v2 ancestry note: the opencode server is a detached daemon (reparented to
 // systemd), so the plugin's own process ancestry no longer reaches the Tabby
 // pty. The TUI client that owns a session is found by its command line
-// (`opencode ... -s <sessionID>`) and its pid + ancestor chain are folded into
+// (`opencode ... -s <sessionID>`) or, for bare TUIs started without `-s`, by
+// matching the client's cwd against the session's project directory (captured
+// from event `location.directory`). Its pid + ancestor chain are folded into
 // each spool file so the Tabby plugin's pty intersection still matches the tab.
 //
 // Env overrides:
@@ -110,8 +112,18 @@ function getAncestorPids(startPid, depth) {
 // carries its session in argv (`opencode -s ses_...`); child (subagent)
 // sessions are resolved to their root via session.created parentIDs.
 const SESSION_PARENTS = new Map()
+// Session -> project directory, captured from every event's `location`.
+// Needed to find TUI clients started without an explicit `-s <sessionID>`.
+const SESSION_DIR = new Map()
 const CLIENT_CACHE_TTL = 5000
 const clientCache = new Map()
+// Last-known routing info per root session, captured while its TUI client is
+// alive (ancestors only resolve then). Used to reset the tab after the client
+// exits, and to know whether a client was ever found for the session.
+const SPOOL_MEMORY = new Map()
+// Root sessions sitting in a finished state whose TUI client we still expect to
+// exit; watched by watchClientExit().
+const WAITING_EXIT = new Map()
 
 function rootSession(sessionID) {
   let cur = sessionID
@@ -123,9 +135,24 @@ function rootSession(sessionID) {
   return cur
 }
 
-function scanClientPids(sessionID) {
+function sessionDir(sessionID) {
+  if (!sessionID) return ""
+  return SESSION_DIR.get(sessionID) || SESSION_DIR.get(rootSession(sessionID)) || ""
+}
+
+// A TUI client is an `opencode` process that is not a server (`serve` /
+// `--standalone`) and not already bound to a session via `-s ses_...`.
+function isBareClient(raw) {
+  const args = raw.split("\0").filter(Boolean)
+  if (!args.length || path.basename(args[0]) !== "opencode") return false
+  if (args.includes("serve") || args.includes("--standalone")) return false
+  return !args.some((a) => a.startsWith("ses_"))
+}
+
+function scanClientPids(sessionID, dir) {
   const pids = []
-  if (!sessionID || process.platform !== "linux") return pids
+  if (process.platform !== "linux") return pids
+  if (!sessionID && !dir) return pids
   try {
     for (const entry of fs.readdirSync("/proc")) {
       if (!/^\d+$/.test(entry)) continue
@@ -133,7 +160,15 @@ function scanClientPids(sessionID) {
       if (pid === process.pid) continue
       try {
         const raw = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8")
-        if (raw.includes("opencode") && raw.includes(sessionID)) pids.push(pid)
+        if (!raw.includes("opencode")) continue
+        if (sessionID && raw.includes(sessionID)) {
+          pids.push(pid)
+          continue
+        }
+        // Bare TUIs carry no session in argv; fall back to matching the
+        // client's working directory against the session's project directory.
+        if (!dir || !isBareClient(raw)) continue
+        if (fs.readlinkSync(`/proc/${pid}/cwd`) === dir) pids.push(pid)
       } catch {
         // process vanished between readdir and read
       }
@@ -144,17 +179,18 @@ function scanClientPids(sessionID) {
   return pids
 }
 
-function findClientPids(sessionID) {
-  if (!sessionID) return []
+function findClientPids(sessionID, dir) {
+  if (!sessionID && !dir) return []
+  const key = `${sessionID || ""}|${dir || ""}`
   const now = Date.now()
-  const hit = clientCache.get(sessionID)
+  const hit = clientCache.get(key)
   if (hit && now - hit.ts < CLIENT_CACHE_TTL) return hit.pids
-  let pids = scanClientPids(sessionID)
-  if (!pids.length) {
+  let pids = scanClientPids(sessionID, dir)
+  if (!pids.length && sessionID) {
     const root = rootSession(sessionID)
-    if (root !== sessionID) pids = scanClientPids(root)
+    if (root !== sessionID) pids = scanClientPids(root, dir)
   }
-  clientCache.set(sessionID, { ts: now, pids })
+  clientCache.set(key, { ts: now, pids })
   if (clientCache.size > 50) {
     for (const [k, v] of clientCache) if (now - v.ts > CLIENT_CACHE_TTL * 4) clientCache.delete(k)
   }
@@ -208,8 +244,10 @@ function emit(raw) {
 function spool(claudeEvent, sessionID, extra) {
   if (process.env.TABBY_STATUS_NO_SPOOL === "1") return
   try {
+    const dir = extra?.cwd || sessionDir(sessionID)
     const ancestors = new Set(getAncestorPids(process.pid, 6))
-    for (const pid of findClientPids(sessionID)) {
+    const clientPids = findClientPids(sessionID, dir)
+    for (const pid of clientPids) {
       ancestors.add(pid)
       for (const a of getAncestorPids(pid, 6)) ancestors.add(a)
     }
@@ -219,8 +257,22 @@ function spool(claudeEvent, sessionID, extra) {
       session: sessionID || "",
       ppid: process.ppid,
       ancestors: [...ancestors],
-      cwd: process.cwd?.() || extra?.cwd || "",
+      cwd: dir || process.cwd?.() || "",
       ...extra,
+    }
+    // Remember how to reach this tab once the client is gone, and arm/disarm
+    // the exit watcher: a finished turn (Stop/error) waits for the client to
+    // exit; any new activity cancels that wait.
+    const key = rootSession(sessionID) || sessionID || ""
+    SPOOL_MEMORY.set(key, {
+      ancestors: status.ancestors,
+      cwd: status.cwd,
+      clientSeen: clientPids.length > 0,
+    })
+    if (claudeEvent === "Stop" || claudeEvent === "PostToolUseFailure") {
+      WAITING_EXIT.set(key, SPOOL_MEMORY.get(key))
+    } else if (claudeEvent !== "SessionEnd") {
+      WAITING_EXIT.delete(key)
     }
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
     const rand = Math.random().toString(36).slice(2, 8)
@@ -252,6 +304,24 @@ function pruneSpool() {
     }
   } catch {
     // ignore
+  }
+}
+
+// The detached server never learns that the TUI client exited, so a finished
+// tab would otherwise stay green after you return to the shell. Poll for the
+// client process disappearing and spool a SessionEnd: the Tabby plugin maps any
+// unknown event to "idle", which clears the tab color. Cached ancestors are
+// reused so the reset still routes to the tab (the shell/pty outlive the client).
+function watchClientExit() {
+  for (const [key, mem] of [...WAITING_EXIT]) {
+    if (!mem || !mem.clientSeen) {
+      WAITING_EXIT.delete(key)
+      continue
+    }
+    if (scanClientPids(key, sessionDir(key)).length) continue
+    WAITING_EXIT.delete(key)
+    spool("SessionEnd", key, { ancestors: mem.ancestors, cwd: mem.cwd })
+    show("idle", key)
   }
 }
 
@@ -288,6 +358,8 @@ function show(kind, sessionID) {
 export function handle(ev) {
   const t = ev?.type
   const d = ev?.data || {}
+  const dir = ev?.location?.directory
+  if (dir && d.sessionID) SESSION_DIR.set(d.sessionID, dir)
   recordEvent(t, d)
   // Agent-run lifecycle: the reliable V2 status source. `session.status` is
   // not emitted for ordinary turns, so map the execution/step events instead.
@@ -336,6 +408,17 @@ export function handle(ev) {
     spool("SessionStart", d.sessionID)
     return
   }
+  if (t === "session.deleted") {
+    // Closing a session should also clear its tab.
+    const id = d.sessionID || ""
+    const key = rootSession(id) || id
+    const mem = SPOOL_MEMORY.get(key)
+    spool("SessionEnd", id, mem ? { ancestors: mem.ancestors, cwd: mem.cwd } : undefined)
+    show("idle", id)
+    WAITING_EXIT.delete(key)
+    SESSION_PARENTS.delete(id)
+    return
+  }
   if (t === "permission.asked") {
     const id = d.sessionID || ""
     show("question", id)
@@ -381,6 +464,16 @@ export default {
     // Fresh process looks idle until first event.
     show("idle", "")
 
+    // Reset finished tabs once their TUI client exits (see watchClientExit).
+    const exitTimer = setInterval(() => {
+      try {
+        watchClientExit()
+      } catch {
+        // best-effort
+      }
+    }, 3000)
+    exitTimer.unref?.()
+
     let stopped = false
     const events = ctx.event.subscribe()
     const loop = (async () => {
@@ -400,6 +493,7 @@ export default {
 
     return async () => {
       stopped = true
+      clearInterval(exitTimer)
       try {
         const closer = events?.return
         if (typeof closer === "function") await closer.call(events)

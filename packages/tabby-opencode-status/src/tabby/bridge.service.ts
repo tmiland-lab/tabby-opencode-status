@@ -14,10 +14,8 @@ import path from "path"
 import type { TerminalService } from "tabby-local"
 import { StatusFileService, ParsedStatus } from "../services/statusFileService"
 import { OpencodeStatusDecorator, TabLike } from "../decorator/opencodeStatusDecorator"
-import { DEFAULT_CONFIG, TabbyOpencodeStatusConfig } from "../interfaces/types"
+import { DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
 import { OpencodeSessionRecord, SessionTracker } from "./sessionTracker"
-
-const OPENCODE_RE = /(^|[/\\])opencode(\s|$)/
 
 const DEBUG_FILE = path.join(os.tmpdir(), "tabby-opencode-status.debug.json")
 
@@ -198,6 +196,7 @@ export class OpencodeStatusBridge {
     this.discover()
     debugLog({ tick: this.tickCount, tabs: this.allTabs().length, trackedCount: this.tracked.size })
     if (this.tickCount % 10 === 1) await this.refreshProcs()
+    else this.reapExited()
     this.spool?.drain((s) => this.route(s))
     if (!this.resumed) {
       this.resumed = true
@@ -308,10 +307,7 @@ export class OpencodeStatusBridge {
   }
 
   private async refreshProcs(): Promise<void> {
-    for (const [tab, t] of this.tracked) {
-      t.procs = await this.childProcs(t.terminal)
-      await this.trackTab(tab, t)
-    }
+    for (const [tab, t] of [...this.tracked]) await this.syncTab(tab, t)
     debugLog({
       tracked: [...this.tracked.values()].map((t) => ({
         title: (t.terminal as unknown as { title?: string }).title ?? "",
@@ -323,12 +319,45 @@ export class OpencodeStatusBridge {
   private async refreshTab(tab: BaseTabComponent): Promise<void> {
     const t = this.tracked.get(tab)
     if (!t) return
+    await this.syncTab(tab, t)
+  }
+
+  // Refresh a tab's process list and clear its status the moment opencode is
+  // gone, i.e. the user is back at the shell. detach() removes the tab here;
+  // discover() re-attaches a clean decorator on a later tick if opencode is
+  // started again in that tab.
+  private async syncTab(tab: BaseTabComponent, t: TrackedTab): Promise<void> {
+    const hadOpencode = hasOpencodeProcess(t.procs.values())
     t.procs = await this.childProcs(t.terminal)
+    if (hadOpencode && !hasOpencodeProcess(t.procs.values())) {
+      this.detach(tab)
+      return
+    }
     await this.trackTab(tab, t)
   }
 
+  // Cheap per-tick liveness probe so the status clears promptly instead of
+  // only on the 10-tick full refresh. Linux-only: /proc is unavailable
+  // elsewhere, where syncTab() still resets the tab on its normal cadence.
+  private reapExited(): void {
+    if (process.platform !== "linux") return
+    for (const [tab, t] of [...this.tracked]) {
+      let sawOpencode = false
+      let alive = false
+      for (const [pid, cmd] of t.procs) {
+        if (!OPENCODE_CMD_RE.test(cmd)) continue
+        sawOpencode = true
+        if (fs.existsSync(`/proc/${pid}`)) {
+          alive = true
+          break
+        }
+      }
+      if (sawOpencode && !alive) this.detach(tab)
+    }
+  }
+
   private async trackTab(tab: BaseTabComponent, t: TrackedTab): Promise<void> {
-    if (![...t.procs.values()].some((cmd) => OPENCODE_RE.test(cmd))) return
+    if (!hasOpencodeProcess(t.procs.values())) return
     let cwd = ""
     try {
       cwd = (await (t.terminal as unknown as { session?: { getWorkingDirectory?: () => Promise<string | null> } }).session?.getWorkingDirectory?.()) || ""
