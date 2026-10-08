@@ -1,6 +1,6 @@
 // Spool watcher: polls the status dir written by opencode-tabby-status,
 // reads each event file (atomic temp+rename on the writer side) and hands
-// parsed { status, ancestors } to a callback. A file is consumed only when the
+// parsed { status, ancestors, title } to a callback. A file is consumed only when the
 // callback reports it was routed — multiple Tabby windows can share one spool
 // dir, and an unrouted file must stay readable for the window that owns the
 // tab. Unrouted files are swept once stale so they cannot accumulate.
@@ -18,6 +18,7 @@ export interface ParsedStatus {
   session: string
   ancestors: number[]
   cwd: string
+  title: string
 }
 
 export function parseSpoolFile(raw: string): ParsedStatus | null {
@@ -29,6 +30,7 @@ export function parseSpoolFile(raw: string): ParsedStatus | null {
       session: s.session || "",
       ancestors: s.ancestors,
       cwd: s.cwd || "",
+      title: s.title || "",
     }
   } catch {
     return null

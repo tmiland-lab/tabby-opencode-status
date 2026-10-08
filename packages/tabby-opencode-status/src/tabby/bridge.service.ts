@@ -14,7 +14,7 @@ import path from "path"
 import type { TerminalService } from "tabby-local"
 import { StatusFileService, ParsedStatus } from "../services/statusFileService"
 import { OpencodeStatusDecorator, TabLike } from "../decorator/opencodeStatusDecorator"
-import { DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
+import { chooseTabs, DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
 import { OpencodeSessionRecord, SessionTracker } from "./sessionTracker"
 
 const DEBUG_FILE = path.join(os.tmpdir(), "tabby-opencode-status.debug.json")
@@ -375,12 +375,24 @@ export class OpencodeStatusBridge {
     // Compare as strings: spool ancestors are JSON numbers while pids coming
     // from ps-node/Tabby may be strings (or vice versa).
     const ancestors = new Set(s.ancestors.map((a) => String(a)))
+    const candidates = [...this.tracked.values()].filter((t) =>
+      [...t.procs.keys()].some((pid) => ancestors.has(String(pid))),
+    )
+    // Several bare TUIs in one cwd all show up in every daemon event's
+    // ancestry, so ancestry alone cannot tell their tabs apart. The session
+    // title in the spool ("OC | <title>" in the TUI) is per-session: prefer
+    // tabs whose title matches it — among the ancestry candidates first, then
+    // globally (a moved/worktree session may not share its daemon's ancestry).
+    const chosen = chooseTabs(
+      [...this.tracked.values()],
+      candidates,
+      s.title,
+      (t) => this.decorator.baseTitleOf(t.adapter),
+    )
     const hits: string[] = []
-    for (const t of this.tracked.values()) {
-      if ([...t.procs.keys()].some((pid) => ancestors.has(String(pid)))) {
-        hits.push((t.terminal as unknown as { title?: string }).title ?? "")
-        this.decorator.apply(t.adapter, s.status)
-      }
+    for (const t of chosen) {
+      hits.push((t.terminal as unknown as { title?: string }).title ?? "")
+      this.decorator.apply(t.adapter, s.status)
     }
     ROUTE_LOG.push({ ts: Date.now(), status: s.status, ancestors: s.ancestors, hits })
     if (ROUTE_LOG.length > 20) ROUTE_LOG.shift()

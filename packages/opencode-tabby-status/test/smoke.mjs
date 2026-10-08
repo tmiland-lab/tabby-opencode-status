@@ -66,7 +66,8 @@ const ctx = { event: { subscribe: () => src.iterable } }
 const cleanup = await plugin.setup(ctx)
 
 const events = [
-  { type: "session.created", data: { sessionID: "ses_smoke" } },
+  { type: "session.created", data: { sessionID: "ses_smoke", title: "Smoke title" } },
+  { type: "session.renamed", data: { sessionID: "ses_smoke", title: "Smoke renamed" } },
   { type: "session.status", data: { sessionID: "ses_smoke", status: { type: "busy" } } },
   { type: "session.status", data: { sessionID: "ses_smoke", status: { type: "retry" } } },
   { type: "permission.asked", data: { sessionID: "ses_smoke" } },
@@ -98,10 +99,15 @@ if (!out.includes("]6;1;bg;")) fail("missing iTerm2 tab color")
 const files = await fs.promises.readdir(spoolDir)
 if (!files.length) fail("no spool files written")
 const got = new Set()
+const titles = new Set()
 for (const f of files) {
   const s = JSON.parse(await fs.promises.readFile(path.join(spoolDir, f), "utf8"))
   if (!s.event || !s.session || !Array.isArray(s.ancestors)) fail(`bad spool shape in ${f}`)
   got.add(s.event)
+  titles.add(s.title || "")
+}
+if (!titles.has("Smoke title") || !titles.has("Smoke renamed")) {
+  fail(`spool title missing or not updated: ${[...titles].join(", ")}`)
 }
 for (const want of ["SessionStart", "PreToolUse", "PermissionRequest", "Stop", "PostToolUseFailure"]) {
   if (!got.has(want)) fail(`missing spool event ${want}`)

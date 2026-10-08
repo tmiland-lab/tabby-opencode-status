@@ -4,7 +4,7 @@ import assert from "node:assert"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { DEFAULT_CONFIG, statusForEvent } from "../src/interfaces/types"
+import { chooseTabs, DEFAULT_CONFIG, statusForEvent, titleMatchesSession } from "../src/interfaces/types"
 import { StatusFileService, parseSpoolFile } from "../src/services/statusFileService"
 import { OpencodeStatusDecorator, TabLike } from "../src/decorator/opencodeStatusDecorator"
 import { SessionTracker } from "../src/tabby/sessionTracker"
@@ -117,5 +117,28 @@ old.note("/old", "x", 1)
 old.prune(10, 100)
 assert.equal(old.list().length, 0)
 console.log("OK tracker")
+
+// 5. title-based routing: "OC | <session title>" with TUI truncation
+assert.equal(titleMatchesSession("OC | Fix the bug", "Fix the bug"), true)
+assert.equal(titleMatchesSession("OC | " + "x".repeat(37) + "…", "x".repeat(50)), true)
+assert.equal(titleMatchesSession("OC | Fix the bug", "Fix the bug!"), false)
+assert.equal(titleMatchesSession("Fix the bug", "Fix the bug"), false)
+assert.equal(titleMatchesSession("OC | Fix the bug", ""), false)
+console.log("OK title match")
+
+// 6. route target selection: title beats ambiguous ancestry, falls back safely
+const tabA = { title: "OC | Fix the bug" }
+const tabB = { title: "OC | Other" }
+const tabC = { title: "Tab" }
+const base = (t: { title: string }) => t.title
+// title match outside the ancestry candidates (moved/worktree session) wins
+assert.deepEqual(chooseTabs([tabA, tabB], [tabB], "Fix the bug", base), [tabA])
+// title match among ambiguous same-cwd candidates wins
+assert.deepEqual(chooseTabs([tabA, tabB], [tabA, tabB], "Fix the bug", base), [tabA])
+// no title in spool: unchanged ancestry candidates
+assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "", base), [tabC])
+// title present but no tab matches: unchanged ancestry candidates
+assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "No match", base), [tabC])
+console.log("OK route selection")
 
 console.log("ALL TABBY PLUGIN CORE TESTS PASSED")

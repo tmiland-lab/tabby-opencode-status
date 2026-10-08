@@ -86,6 +86,11 @@ export class OpencodeStatusDecorator {
     }
   }
 
+  /** The tab's terminal title with any status emoji we prepended removed. */
+  baseTitleOf(tab: TabLike): string {
+    return this.tabs.get(tab)?.baseTitle ?? ""
+  }
+
   apply(tab: TabLike, status: OpencodeStatus): void {
     const rec = this.tabs.get(tab)
     if (!rec) return

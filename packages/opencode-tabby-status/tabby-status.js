@@ -115,6 +115,7 @@ const SESSION_PARENTS = new Map()
 // Session -> project directory, captured from every event's `location`.
 // Needed to find TUI clients started without an explicit `-s <sessionID>`.
 const SESSION_DIR = new Map()
+const SESSION_TITLE = new Map()
 const CLIENT_CACHE_TTL = 5000
 const clientCache = new Map()
 // Last-known routing info per root session, captured while its TUI client is
@@ -138,6 +139,11 @@ function rootSession(sessionID) {
 function sessionDir(sessionID) {
   if (!sessionID) return ""
   return SESSION_DIR.get(sessionID) || SESSION_DIR.get(rootSession(sessionID)) || ""
+}
+
+function sessionTitle(sessionID) {
+  if (!sessionID) return ""
+  return SESSION_TITLE.get(rootSession(sessionID)) || SESSION_TITLE.get(sessionID) || ""
 }
 
 // A TUI client is an `opencode` process that is not a server (`serve` /
@@ -258,6 +264,7 @@ function spool(claudeEvent, sessionID, extra) {
       ppid: process.ppid,
       ancestors: [...ancestors],
       cwd: dir || process.cwd?.() || "",
+      title: extra?.title ?? sessionTitle(sessionID),
       ...extra,
     }
     // Remember how to reach this tab once the client is gone, and arm/disarm
@@ -404,8 +411,15 @@ export function handle(ev) {
   }
   if (t === "session.created") {
     if (d.parentID) SESSION_PARENTS.set(d.sessionID, d.parentID)
+    if (d.title) SESSION_TITLE.set(d.sessionID, d.title)
     show("idle", d.sessionID)
     spool("SessionStart", d.sessionID)
+    return
+  }
+  if (t === "session.renamed") {
+    // Auto-generated and manual renames both land here: keep the title the
+    // TUI shows so events route to the right tab.
+    if (d.sessionID && d.title) SESSION_TITLE.set(d.sessionID, d.title)
     return
   }
   if (t === "session.deleted") {
@@ -417,6 +431,7 @@ export function handle(ev) {
     show("idle", id)
     WAITING_EXIT.delete(key)
     SESSION_PARENTS.delete(id)
+    SESSION_TITLE.delete(id)
     return
   }
   if (t === "permission.asked") {

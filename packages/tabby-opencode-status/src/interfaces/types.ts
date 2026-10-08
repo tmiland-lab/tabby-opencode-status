@@ -12,6 +12,7 @@ export interface SpoolEvent {
   ppid: number
   ancestors: number[]
   cwd?: string
+  title?: string
 }
 
 export interface TabbyOpencodeStatusConfig {
@@ -55,6 +56,36 @@ export const OPENCODE_CMD_RE = /(^|[/\\])opencode(\s|$)/
 export function hasOpencodeProcess(procs: Iterable<string>): boolean {
   for (const cmd of procs) if (OPENCODE_CMD_RE.test(cmd)) return true
   return false
+}
+
+// The opencode TUI sets its terminal title to `OC | <session title>`
+// (truncated to 40 chars with a trailing ellipsis); Tabby tabs carry that
+// title plus an optional status-emoji prefix. Used to route events to the
+// right tab when several TUIs share one cwd / process ancestry.
+export function titleMatchesSession(tabTitle: string, sessionTitle: string): boolean {
+  if (!sessionTitle) return false
+  const prefix = "OC | "
+  if (!tabTitle.startsWith(prefix)) return false
+  const shown = tabTitle.slice(prefix.length)
+  if (shown === sessionTitle) return true
+  return shown.endsWith("…") && sessionTitle.startsWith(shown.slice(0, -1))
+}
+
+// Picks which tabs a spooled status belongs to: title matches among the
+// ancestry candidates win; a title-only match (e.g. a session whose directory
+// moved) beats an ambiguous ancestry candidate; no title or no match falls
+// back to the ancestry candidates unchanged.
+export function chooseTabs<T>(
+  all: T[],
+  candidates: T[],
+  sessionTitle: string,
+  baseTitleOf: (t: T) => string,
+): T[] {
+  if (!sessionTitle) return candidates
+  const byTitle = all.filter((t) => titleMatchesSession(baseTitleOf(t), sessionTitle))
+  if (!byTitle.length) return candidates
+  const both = byTitle.filter((t) => candidates.includes(t))
+  return both.length ? both : byTitle
 }
 
 // Claude-hook names (also emitted by opencode-tabby-status) -> tab state.
