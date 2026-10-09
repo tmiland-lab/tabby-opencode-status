@@ -111,20 +111,34 @@ function getAncestorPids(startPid, depth) {
 // The server is detached, so walk up from the TUI client instead. The client
 // carries its session in argv (`opencode -s ses_...`); child (subagent)
 // sessions are resolved to their root via session.created parentIDs.
-const SESSION_PARENTS = new Map()
+//
+// State lives on globalThis: opencode re-runs setup() on reload without
+// disposing the old subscription, so each reload used to leak an instance with
+// cold maps that spooled title-less files. Shared state + self-dispose in
+// setup() keep one live instance that already knows every session.
+const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
+  SESSION_PARENTS: new Map(),
+  SESSION_DIR: new Map(),
+  SESSION_TITLE: new Map(),
+  clientCache: new Map(),
+  SPOOL_MEMORY: new Map(),
+  WAITING_EXIT: new Map(),
+  dispose: null,
+})
+const SESSION_PARENTS = STORE.SESSION_PARENTS
 // Session -> project directory, captured from every event's `location`.
 // Needed to find TUI clients started without an explicit `-s <sessionID>`.
-const SESSION_DIR = new Map()
-const SESSION_TITLE = new Map()
+const SESSION_DIR = STORE.SESSION_DIR
+const SESSION_TITLE = STORE.SESSION_TITLE
 const CLIENT_CACHE_TTL = 5000
-const clientCache = new Map()
+const clientCache = STORE.clientCache
 // Last-known routing info per root session, captured while its TUI client is
 // alive (ancestors only resolve then). Used to reset the tab after the client
 // exits, and to know whether a client was ever found for the session.
-const SPOOL_MEMORY = new Map()
+const SPOOL_MEMORY = STORE.SPOOL_MEMORY
 // Root sessions sitting in a finished state whose TUI client we still expect to
 // exit; watched by watchClientExit().
-const WAITING_EXIT = new Map()
+const WAITING_EXIT = STORE.WAITING_EXIT
 
 function rootSession(sessionID) {
   let cur = sessionID
@@ -476,6 +490,13 @@ export function handle(ev) {
 export default {
   id: "opencode-tabby-status",
   async setup(ctx) {
+    // opencode re-runs setup() on plugin reload without disposing the old
+    // instance; stop it so events are not spooled twice from now on.
+    try {
+      await STORE.dispose?.()
+    } catch {
+      // ignore
+    }
     // Fresh process looks idle until first event.
     show("idle", "")
 
@@ -506,7 +527,7 @@ export default {
       }
     })()
 
-    return async () => {
+    const dispose = async () => {
       stopped = true
       clearInterval(exitTimer)
       try {
@@ -517,5 +538,7 @@ export default {
       }
       void loop.catch(() => {})
     }
+    STORE.dispose = dispose
+    return dispose
   },
 }

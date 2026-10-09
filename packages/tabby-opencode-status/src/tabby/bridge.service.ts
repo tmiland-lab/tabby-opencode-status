@@ -14,7 +14,7 @@ import path from "path"
 import type { TerminalService } from "tabby-local"
 import { StatusFileService, ParsedStatus } from "../services/statusFileService"
 import { OpencodeStatusDecorator, TabLike } from "../decorator/opencodeStatusDecorator"
-import { chooseTabs, DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
+import { chooseTabsForSession, DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
 import { OpencodeSessionRecord, SessionTracker } from "./sessionTracker"
 
 const DEBUG_FILE = path.join(os.tmpdir(), "tabby-opencode-status.debug.json")
@@ -27,6 +27,11 @@ interface RouteRecord {
 }
 
 const ROUTE_LOG: RouteRecord[] = []
+
+// Session -> tab learned from title-matched events. Spool files without a title
+// (cold or duplicate plugin instances) use this instead of broadcasting to
+// every ancestry candidate in the same directory.
+const SESSION_TABS = new Map<string, TrackedTab>()
 
 // Best-effort diagnostics: after a restart this file shows what the bridge
 // discovered, which pids each tab matched, and how spool events routed.
@@ -383,11 +388,15 @@ export class OpencodeStatusBridge {
     // title in the spool ("OC | <title>" in the TUI) is per-session: prefer
     // tabs whose title matches it — among the ancestry candidates first, then
     // globally (a moved/worktree session may not share its daemon's ancestry).
-    const chosen = chooseTabs(
+    // Title-less events (cold/duplicate plugin instances) use the per-session
+    // memory instead of broadcasting.
+    const chosen = chooseTabsForSession(
       [...this.tracked.values()],
       candidates,
+      s.session,
       s.title,
       (t) => this.decorator.baseTitleOf(t.adapter),
+      SESSION_TABS,
     )
     const hits: string[] = []
     for (const t of chosen) {

@@ -4,7 +4,7 @@ import assert from "node:assert"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { chooseTabs, DEFAULT_CONFIG, statusForEvent, titleMatchesSession } from "../src/interfaces/types"
+import { chooseTabs, chooseTabsForSession, DEFAULT_CONFIG, statusForEvent, titleMatchesSession } from "../src/interfaces/types"
 import { StatusFileService, parseSpoolFile } from "../src/services/statusFileService"
 import { OpencodeStatusDecorator, TabLike } from "../src/decorator/opencodeStatusDecorator"
 import { SessionTracker } from "../src/tabby/sessionTracker"
@@ -139,6 +139,20 @@ assert.deepEqual(chooseTabs([tabA, tabB], [tabA, tabB], "Fix the bug", base), [t
 assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "", base), [tabC])
 // title present but no tab matches: unchanged ancestry candidates
 assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "No match", base), [tabC])
-console.log("OK route selection")
+
+// 7. session memory: title-less spool files reuse the tab a session was
+// routed to before instead of broadcasting to all ancestry candidates
+const mem = new Map<string, { title: string }>()
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_1", "Fix the bug", base, mem), [tabA])
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_1", "", base, mem), [tabA])
+// remembered tab no longer tracked: fall back to the ancestry candidates
+assert.deepEqual(chooseTabsForSession([tabB], [tabA, tabB], "ses_1", "", base, mem), [tabA, tabB])
+// remembered tab not an ancestry candidate while others are: prefer candidates
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabB], "ses_1", "", base, mem), [tabB])
+// no candidates at all (moved session): the remembered tab still routes
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [], "ses_1", "", base, mem), [tabA])
+// unknown session without title: unchanged ancestry candidates
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_2", "", base, mem), [tabA, tabB])
+console.log("OK session memory")
 
 console.log("ALL TABBY PLUGIN CORE TESTS PASSED")

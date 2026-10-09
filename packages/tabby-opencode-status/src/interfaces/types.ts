@@ -88,6 +88,35 @@ export function chooseTabs<T>(
   return both.length ? both : byTitle
 }
 
+// chooseTabs plus a session -> tab memory. Titled events are routed as usual
+// and (when unambiguous) remembered. Title-less events — spool files written
+// by cold or duplicate plugin instances — reuse the remembered tab instead of
+// broadcasting to every ancestry candidate sharing the directory. `all` must
+// be the currently tracked tabs so stale entries are ignored.
+export function chooseTabsForSession<T>(
+  all: T[],
+  candidates: T[],
+  session: string,
+  sessionTitle: string,
+  baseTitleOf: (t: T) => string,
+  memory: Map<string, T>,
+): T[] {
+  if (sessionTitle) {
+    const chosen = chooseTabs(all, candidates, sessionTitle, baseTitleOf)
+    if (session && chosen.length === 1) memory.set(session, chosen[0])
+    return chosen
+  }
+  const remembered = session ? memory.get(session) : undefined
+  if (
+    remembered !== undefined &&
+    all.includes(remembered) &&
+    (candidates.length === 0 || candidates.includes(remembered))
+  ) {
+    return [remembered]
+  }
+  return candidates
+}
+
 // Claude-hook names (also emitted by opencode-tabby-status) -> tab state.
 export function statusForEvent(event: string): OpencodeStatus {
   switch (event) {
