@@ -21,13 +21,16 @@
 // Tabby true tab color comes from the tabby-claude-status plugin reading the
 // spool dir below — install it for the bottom-border color.
 //
-// v2 ancestry note: the opencode server is a detached daemon (reparented to
-// systemd), so the plugin's own process ancestry no longer reaches the Tabby
-// pty. The TUI client that owns a session is found by its command line
-// (`opencode ... -s <sessionID>`) or, for bare TUIs started without `-s`, by
-// matching the client's cwd against the session's project directory (captured
-// from event `location.directory`). Its pid + ancestor chain are folded into
-// each spool file so the Tabby plugin's pty intersection still matches the tab.
+// v2 ancestry note: the opencode server is a detached daemon, so the TUI client
+// that owns a session is found instead by its command line (`opencode ... -s
+// <sessionID>`); only when no such client exists does the cwd fallback for bare
+// TUIs (started without `-s`, matched via event `location.directory`) run —
+// otherwise every bare `opencode` in the same directory (e.g. an `--auto`
+// monitor tab) would receive every session's status. The client's pid +
+// ancestor chain are folded into each spool file so the Tabby plugin's pty
+// intersection still matches the tab. The daemon's own ancestry is deliberately
+// NOT emitted: the detached server cannot identify a session's tab, and a
+// server spawned from a TUI would broadcast every session to that tab.
 //
 // Env overrides:
 //   TABBY_STATUS_NO_OSC=1        disable OSC emission
@@ -205,11 +208,16 @@ function findClientPids(sessionID, dir) {
   const now = Date.now()
   const hit = clientCache.get(key)
   if (hit && now - hit.ts < CLIENT_CACHE_TTL) return hit.pids
-  let pids = scanClientPids(sessionID, dir)
+  // Exact match first (`opencode ... -s <sessionID>`, or the root session for
+  // subagent sessions). Only when no exact client exists may the cwd fallback
+  // for bare TUIs run: otherwise every bare `opencode` in the same directory
+  // (e.g. an `--auto` monitor tab) would receive every session's status.
+  let pids = sessionID ? scanClientPids(sessionID, null) : []
   if (!pids.length && sessionID) {
     const root = rootSession(sessionID)
-    if (root !== sessionID) pids = scanClientPids(root, dir)
+    if (root !== sessionID) pids = scanClientPids(root, null)
   }
+  if (!pids.length && dir) pids = scanClientPids(null, dir)
   clientCache.set(key, { ts: now, pids })
   if (clientCache.size > 50) {
     for (const [k, v] of clientCache) if (now - v.ts > CLIENT_CACHE_TTL * 4) clientCache.delete(k)
@@ -265,7 +273,10 @@ function spool(claudeEvent, sessionID, extra) {
   if (process.env.TABBY_STATUS_NO_SPOOL === "1") return
   try {
     const dir = extra?.cwd || sessionDir(sessionID)
-    const ancestors = new Set(getAncestorPids(process.pid, 6))
+    // Only the TUI client chain belongs here. The daemon's own ancestry is
+    // deliberately excluded: the detached server cannot identify a session's
+    // tab, and a server spawned from a TUI would broadcast every session to it.
+    const ancestors = new Set()
     const clientPids = findClientPids(sessionID, dir)
     for (const pid of clientPids) {
       ancestors.add(pid)
@@ -289,6 +300,7 @@ function spool(claudeEvent, sessionID, extra) {
       ancestors: status.ancestors,
       cwd: status.cwd,
       clientSeen: clientPids.length > 0,
+      clientPids,
     })
     if (claudeEvent === "Stop" || claudeEvent === "PostToolUseFailure") {
       WAITING_EXIT.set(key, SPOOL_MEMORY.get(key))
@@ -329,17 +341,28 @@ function pruneSpool() {
 }
 
 // The detached server never learns that the TUI client exited, so a finished
-// tab would otherwise stay green after you return to the shell. Poll for the
-// client process disappearing and spool a SessionEnd: the Tabby plugin maps any
-// unknown event to "idle", which clears the tab color. Cached ancestors are
-// reused so the reset still routes to the tab (the shell/pty outlive the client).
+// tab would otherwise stay green after you return to the shell. Poll the
+// client pids remembered at spool time (a rescan cannot tell this session's
+// dead client from a live bare TUI in the same directory) and spool a
+// SessionEnd once they are gone: the Tabby plugin maps any unknown event to
+// "idle", which clears the tab color. Cached ancestors are reused so the reset
+// still routes to the tab (the shell/pty outlive the client).
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err?.code === "EPERM"
+  }
+}
+
 function watchClientExit() {
   for (const [key, mem] of [...WAITING_EXIT]) {
     if (!mem || !mem.clientSeen) {
       WAITING_EXIT.delete(key)
       continue
     }
-    if (scanClientPids(key, sessionDir(key)).length) continue
+    if ((mem.clientPids || []).some(pidAlive)) continue
     WAITING_EXIT.delete(key)
     spool("SessionEnd", key, { ancestors: mem.ancestors, cwd: mem.cwd })
     show("idle", key)
