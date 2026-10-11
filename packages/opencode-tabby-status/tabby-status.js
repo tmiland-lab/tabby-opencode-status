@@ -484,6 +484,16 @@ export function handle(ev) {
     spool("PreToolUse", id)
     return
   }
+  if (t === "session.tool.input.started" && d.name === "question") {
+    // V2 emits no form.created for the question tool (the event exists in the
+    // schema but has zero emissions), so drive the question status from the
+    // tool call itself. Without this the tab keeps showing the previous status
+    // (e.g. "working") while the question waits for an answer.
+    const id = d.sessionID || ""
+    show("question", id)
+    spool("PermissionRequest", id)
+    return
+  }
   if (t === "form.created") {
     const id = d.form?.sessionID || d.sessionID || ""
     show("question", id)

@@ -12,7 +12,8 @@ opencode plugin add opencode-tabby-status
 ## What it does
 
 On `session.execution.started` / `session.step.started` (working),
-`permission.asked` / `form.created` (needs input), `session.execution.succeeded`
+`permission.asked` / `form.created` / the `question` tool (needs input),
+`session.execution.succeeded`
 / `.interrupted` (done), `session.execution.failed` (error), and
 `session.created` (idle) it emits, best-effort (never breaks a session):
 

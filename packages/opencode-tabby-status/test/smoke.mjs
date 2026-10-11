@@ -75,6 +75,10 @@ const events = [
   { type: "form.created", data: { form: { sessionID: "ses_smoke" } } },
   { type: "form.replied", data: { sessionID: "ses_smoke" } },
   { type: "form.cancelled", data: { sessionID: "ses_smoke" } },
+  // V2 never emits form.created for the question tool, so its input event must
+  // raise the question status instead. A non-question tool must not.
+  { type: "session.tool.input.started", data: { sessionID: "ses_smokeq", name: "question" } },
+  { type: "session.tool.input.started", data: { sessionID: "ses_smokenotq", name: "shell" } },
   { type: "session.status", data: { sessionID: "ses_smoke", status: { type: "idle" } } },
   { type: "session.idle", data: { sessionID: "ses_smoke" } },
   { type: "session.execution.failed", data: { sessionID: "ses_smoke" } },
@@ -115,6 +119,21 @@ if (!titles.has("Smoke title") || !titles.has("Smoke renamed")) {
 for (const want of ["SessionStart", "PreToolUse", "PermissionRequest", "Stop", "PostToolUseFailure"]) {
   if (!got.has(want)) fail(`missing spool event ${want}`)
 }
+const read = async (session, event) => {
+  let found = null
+  for (const f of await fs.promises.readdir(spoolDir)) {
+    if (!f.endsWith(".json")) continue
+    const s = JSON.parse(await fs.promises.readFile(path.join(spoolDir, f), "utf8"))
+    if (s.session === session && (!event || s.event === event)) found = s
+  }
+  return found
+}
+if (!(await read("ses_smokeq", "PermissionRequest"))) {
+  fail("question tool input did not spool PermissionRequest")
+}
+if (await read("ses_smokenotq", "PermissionRequest")) {
+  fail("non-question tool input spooled PermissionRequest")
+}
 
 // Regression: an exact `-s <sessionID>` client must win over the bare-TUI cwd
 // fallback, otherwise every bare `opencode` in the same directory (e.g. an
@@ -144,15 +163,6 @@ if (process.platform === "linux") {
   }
   if (!(await ready(exact.pid, "ses_smokefake")) || !(await ready(bare.pid, "--auto"))) {
     fail("fake clients did not start")
-  }
-  const read = async (session, event) => {
-    let found = null
-    for (const f of await fs.promises.readdir(spoolDir)) {
-      if (!f.endsWith(".json")) continue
-      const s = JSON.parse(await fs.promises.readFile(path.join(spoolDir, f), "utf8"))
-      if (s.session === session && (!event || s.event === event)) found = s
-    }
-    return found
   }
   handle({ type: "session.step.started", data: { sessionID: "ses_smokefake" }, location: { directory: dir } })
   handle({ type: "session.step.started", data: { sessionID: "ses_smokebare" }, location: { directory: dir } })
