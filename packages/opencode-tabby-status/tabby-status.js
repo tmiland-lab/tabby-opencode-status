@@ -126,8 +126,19 @@ const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
   clientCache: new Map(),
   SPOOL_MEMORY: new Map(),
   WAITING_EXIT: new Map(),
+  doneTimers: new Map(),
+  infoLookedUp: new Set(),
+  ctx: null,
+  booted: false,
   dispose: null,
 })
+// A process that loaded an older version of this plugin already holds this
+// store (the globalThis symbol survives reloads), so its shape can predate the
+// fields below. Backfill them or handle() throws before spooling anything.
+STORE.doneTimers ??= new Map()
+STORE.infoLookedUp ??= new Set()
+STORE.ctx ??= null
+STORE.booted ??= false
 const SESSION_PARENTS = STORE.SESSION_PARENTS
 // Session -> project directory, captured from every event's `location`.
 // Needed to find TUI clients started without an explicit `-s <sessionID>`.
@@ -151,6 +162,97 @@ function rootSession(sessionID) {
     cur = parent
   }
   return cur
+}
+
+// A turn is done when execution.succeeded lands — but that event is not
+// guaranteed (a daemon restart kills the tail of a turn, and some turns only
+// emit step.ended). Treat the last step of a turn as a fallback "done" after a
+// short grace window; real activity in the window cancels it (steps run
+// back-to-back within a turn, so a mid-turn step.ended is always followed by
+// another step.started before the timer fires).
+function cancelDone(sessionID) {
+  const t = STORE.doneTimers.get(sessionID)
+  if (!t) return
+  clearTimeout(t)
+  STORE.doneTimers.delete(sessionID)
+}
+
+function scheduleDone(sessionID) {
+  if (!sessionID) return
+  cancelDone(sessionID)
+  const t = setTimeout(() => {
+    STORE.doneTimers.delete(sessionID)
+    show("done", sessionID)
+    spool("Stop", sessionID)
+  }, 4000)
+  t.unref?.()
+  STORE.doneTimers.set(sessionID, t)
+}
+
+// Sessions created before this plugin instance (the daemon can outlive a
+// reload) never fired session.created here, so their title/parent are unknown
+// and their spools would route without a title. Look them up once per id.
+function ensureSessionInfo(sessionID) {
+  if (!sessionID || STORE.infoLookedUp.has(sessionID)) return
+  const ctx = STORE.ctx
+  if (!ctx?.session?.get) return
+  STORE.infoLookedUp.add(sessionID)
+  Promise.resolve()
+    .then(() => ctx.session.get({ sessionID }))
+    .then((info) => {
+      if (!info?.id) return
+      if (info.parentID) SESSION_PARENTS.set(info.id, info.parentID)
+      if (info.title) SESSION_TITLE.set(info.id, info.title)
+    })
+    .catch(() => {})
+}
+
+// Every live TUI bound to a session (`opencode ... -s <id>`) owns one tab.
+function scanBoundSessions() {
+  const out = new Set()
+  if (process.platform !== "linux") return out
+  try {
+    for (const entry of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue
+      try {
+        const raw = fs.readFileSync(`/proc/${entry}/cmdline`, "utf8")
+        if (!raw.includes("opencode")) continue
+        const m = raw.match(/(?:-s|--session)[\0=](ses_[A-Za-z0-9]+)/)
+        if (m) out.add(m[1])
+      } catch {
+        // process vanished between readdir and read
+      }
+    }
+  } catch {
+    // no /proc
+  }
+  return out
+}
+
+// On a cold start the store is empty: sessions that predate this plugin
+// instance (every TUI that survived a daemon restart) have no title/parent
+// here and their tabs still show the status of the daemon that died. Rebuild
+// what the session service knows and reset each live client tab to idle.
+async function bootstrap(ctx) {
+  const sids = scanBoundSessions()
+  for (const sid of sids) {
+    try {
+      const info = await ctx.session.get({ sessionID: sid })
+      if (!info?.id) continue
+      STORE.infoLookedUp.add(info.id)
+      if (info.parentID) SESSION_PARENTS.set(info.id, info.parentID)
+      if (info.title) SESSION_TITLE.set(info.id, info.title)
+    } catch {
+      // session unknown to this daemon: keep the pid-based route only
+    }
+  }
+  for (const sid of sids) {
+    try {
+      spool("SessionStart", sid)
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 function sessionDir(sessionID) {
@@ -271,6 +373,7 @@ function emit(raw) {
 
 function spool(claudeEvent, sessionID, extra) {
   if (process.env.TABBY_STATUS_NO_SPOOL === "1") return
+  ensureSessionInfo(sessionID)
   try {
     const dir = extra?.cwd || sessionDir(sessionID)
     // Only the TUI client chain belongs here. The daemon's own ancestry is
@@ -408,26 +511,36 @@ export function handle(ev) {
   // Agent-run lifecycle: the reliable V2 status source. `session.status` is
   // not emitted for ordinary turns, so map the execution/step events instead.
   if (t === "session.execution.started") {
+    cancelDone(d.sessionID)
     show("working", d.sessionID)
     spool("PreToolUse", d.sessionID)
     return
   }
   if (t === "session.execution.succeeded" || t === "session.execution.interrupted") {
+    cancelDone(d.sessionID)
     show("done", d.sessionID)
     spool("Stop", d.sessionID)
     return
   }
   if (t === "session.step.started") {
+    cancelDone(d.sessionID)
     show("working", d.sessionID)
     spool("PreToolUse", d.sessionID)
     return
   }
+  if (t === "session.step.ended") {
+    // Fallback done: execution.succeeded does not always arrive.
+    scheduleDone(d.sessionID)
+    return
+  }
   if (t === "session.retry.scheduled") {
+    cancelDone(d.sessionID)
     show("working", d.sessionID)
     spool("PreToolUse", d.sessionID)
     return
   }
   if (t === "session.status") {
+    cancelDone(d.sessionID)
     const s = d.status?.type
     if (s === "busy") {
       show("working", d.sessionID)
@@ -442,6 +555,7 @@ export function handle(ev) {
     return
   }
   if (t === "session.idle") {
+    cancelDone(d.sessionID)
     show("done", d.sessionID)
     spool("Stop", d.sessionID)
     return
@@ -514,6 +628,7 @@ export function handle(ev) {
   }
   if (t === "session.execution.failed") {
     const id = d.sessionID || ""
+    cancelDone(id)
     show("error", id)
     spool("PostToolUseFailure", id)
     return
@@ -529,6 +644,13 @@ export default {
       await STORE.dispose?.()
     } catch {
       // ignore
+    }
+    // The daemon can restart under live TUIs: rebuild session info and reset
+    // the tabs that still show the dead daemon's last status.
+    STORE.ctx = ctx
+    if (!STORE.booted) {
+      STORE.booted = true
+      void bootstrap(ctx).catch(() => {})
     }
     // Fresh process looks idle until first event.
     show("idle", "")
