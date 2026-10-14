@@ -135,24 +135,34 @@ const base = (t: { title: string }) => t.title
 assert.deepEqual(chooseTabs([tabA, tabB], [tabB], "Fix the bug", base), [tabA])
 // title match among ambiguous same-cwd candidates wins
 assert.deepEqual(chooseTabs([tabA, tabB], [tabA, tabB], "Fix the bug", base), [tabA])
-// no title in spool: unchanged ancestry candidates
+// no title in spool: keep a single ancestry candidate
 assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "", base), [tabC])
-// title present but no tab matches: unchanged ancestry candidates
+// title present but no tab matches: keep a single ancestry candidate
 assert.deepEqual(chooseTabs([tabA, tabB], [tabC], "No match", base), [tabC])
+// ambiguous events with several same-cwd candidates are dropped, not broadcast
+assert.deepEqual(chooseTabs([tabA, tabB], [tabA, tabB], "Another", base), [])
+assert.deepEqual(chooseTabs([tabA, tabB], [tabA, tabB], "", base), [])
+// two tabs share the session title: no unique target, prefer a single candidate
+const tabA2 = { title: "OC | Fix the bug" }
+assert.deepEqual(chooseTabs([tabA, tabA2], [tabC], "Fix the bug", base), [tabC])
+assert.deepEqual(chooseTabs([tabA, tabA2], [tabB, tabC], "Fix the bug", base), [])
+console.log("OK title routing")
 
 // 7. session memory: title-less spool files reuse the tab a session was
-// routed to before instead of broadcasting to all ancestry candidates
+// routed to before; ambiguous events are never broadcast to every candidate
 const mem = new Map<string, { title: string }>()
 assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_1", "Fix the bug", base, mem), [tabA])
 assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_1", "", base, mem), [tabA])
-// remembered tab no longer tracked: fall back to the ancestry candidates
-assert.deepEqual(chooseTabsForSession([tabB], [tabA, tabB], "ses_1", "", base, mem), [tabA, tabB])
+// remembered tab no longer tracked and no title: dropped, not broadcast
+assert.deepEqual(chooseTabsForSession([tabB], [tabA, tabB], "ses_1", "", base, mem), [])
 // remembered tab not an ancestry candidate while others are: prefer candidates
 assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabB], "ses_1", "", base, mem), [tabB])
 // no candidates at all (moved session): the remembered tab still routes
 assert.deepEqual(chooseTabsForSession([tabA, tabB], [], "ses_1", "", base, mem), [tabA])
-// unknown session without title: unchanged ancestry candidates
-assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_2", "", base, mem), [tabA, tabB])
+// unknown session without title: dropped, not broadcast
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_2", "", base, mem), [])
+// ambiguous titled event with a remembered tab: memory wins over broadcast
+assert.deepEqual(chooseTabsForSession([tabA, tabB], [tabA, tabB], "ses_1", "No match", base, mem), [tabA])
 console.log("OK session memory")
 
 console.log("ALL TABBY PLUGIN CORE TESTS PASSED")

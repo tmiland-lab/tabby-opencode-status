@@ -71,28 +71,35 @@ export function titleMatchesSession(tabTitle: string, sessionTitle: string): boo
   return shown.endsWith("…") && sessionTitle.startsWith(shown.slice(0, -1))
 }
 
-// Picks which tabs a spooled status belongs to: title matches among the
-// ancestry candidates win; a title-only match (e.g. a session whose directory
-// moved) beats an ambiguous ancestry candidate; no title or no match falls
-// back to the ancestry candidates unchanged.
+// Picks which tabs a spooled status belongs to. A title match among the
+// ancestry candidates wins; a unique title-only match (e.g. a session whose
+// directory moved) beats the ancestry candidates. Ambiguous events — no
+// title, no match, or several tabs sharing the title — fall back to the
+// ancestry candidates only when exactly one is involved; otherwise they are
+// dropped rather than broadcast, so one session's status can never paint
+// unrelated tabs that merely share a directory.
 export function chooseTabs<T>(
   all: T[],
   candidates: T[],
   sessionTitle: string,
   baseTitleOf: (t: T) => string,
 ): T[] {
-  if (!sessionTitle) return candidates
+  const onlyCandidate = () => (candidates.length === 1 ? candidates : [])
+  if (!sessionTitle) return onlyCandidate()
   const byTitle = all.filter((t) => titleMatchesSession(baseTitleOf(t), sessionTitle))
-  if (!byTitle.length) return candidates
+  if (!byTitle.length) return onlyCandidate()
   const both = byTitle.filter((t) => candidates.includes(t))
-  return both.length ? both : byTitle
+  if (both.length) return both
+  if (byTitle.length === 1) return byTitle
+  return onlyCandidate()
 }
 
 // chooseTabs plus a session -> tab memory. Titled events are routed as usual
-// and (when unambiguous) remembered. Title-less events — spool files written
+// and (when unambiguous) remembered; title-less events — spool files written
 // by cold or duplicate plugin instances — reuse the remembered tab instead of
-// broadcasting to every ancestry candidate sharing the directory. `all` must
-// be the currently tracked tabs so stale entries are ignored.
+// broadcasting to every ancestry candidate sharing the directory. Ambiguous
+// events also fall back to the remembered tab when one is known. `all` must be
+// the currently tracked tabs so stale entries are ignored.
 export function chooseTabsForSession<T>(
   all: T[],
   candidates: T[],
@@ -101,20 +108,24 @@ export function chooseTabsForSession<T>(
   baseTitleOf: (t: T) => string,
   memory: Map<string, T>,
 ): T[] {
-  if (sessionTitle) {
-    const chosen = chooseTabs(all, candidates, sessionTitle, baseTitleOf)
-    if (session && chosen.length === 1) memory.set(session, chosen[0])
-    return chosen
-  }
   const remembered = session ? memory.get(session) : undefined
-  if (
+  const canRemember =
     remembered !== undefined &&
     all.includes(remembered) &&
     (candidates.length === 0 || candidates.includes(remembered))
-  ) {
-    return [remembered]
+  if (sessionTitle) {
+    const chosen = chooseTabs(all, candidates, sessionTitle, baseTitleOf)
+    if (session && chosen.length === 1) {
+      memory.set(session, chosen[0])
+      return chosen
+    }
+    // Ambiguous titled event (e.g. the tab title is momentarily stale after a
+    // rename): prefer the tab this session was routed to before.
+    if (chosen.length === 0 && canRemember) return [remembered as T]
+    return chosen
   }
-  return candidates
+  if (canRemember) return [remembered as T]
+  return candidates.length === 1 ? candidates : []
 }
 
 // Claude-hook names (also emitted by opencode-tabby-status) -> tab state.

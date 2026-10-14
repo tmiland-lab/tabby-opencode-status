@@ -10,8 +10,12 @@ import os from "os"
 import path from "path"
 import { statusForEvent, OpencodeStatus, SpoolEvent } from "../interfaces/types"
 
-/** Unrouted spool files older than this are discarded (no window wanted them). */
-const UNROUTED_TTL_MS = 15_000
+/**
+ * Unrouted spool files older than this are discarded (no window wanted them).
+ * Kept above the plugin's heartbeat interval (60 s) so a briefly stalled
+ * window still gets a second chance at the original file before it expires.
+ */
+const UNROUTED_TTL_MS = 120_000
 
 export interface ParsedStatus {
   status: OpencodeStatus

@@ -38,6 +38,7 @@
 //   TABBY_STATUS_NO_TITLE=1      don't touch tab title
 //   TABBY_STATUS_BELL=1          bell on done/error
 //   TABBY_STATUS_SPOOL_DIR=...   override spool dir (default $TMPDIR/tabby-claude-status.d)
+//   TABBY_STATUS_HEARTBEAT_MS=N  status re-assert interval (default 60000, 0 = off)
 
 import fs from "node:fs"
 import os from "node:os"
@@ -128,6 +129,7 @@ const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
   WAITING_EXIT: new Map(),
   doneTimers: new Map(),
   infoLookedUp: new Set(),
+  lastSpool: new Map(),
   ctx: null,
   booted: false,
   dispose: null,
@@ -137,6 +139,7 @@ const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
 // fields below. Backfill them or handle() throws before spooling anything.
 STORE.doneTimers ??= new Map()
 STORE.infoLookedUp ??= new Set()
+STORE.lastSpool ??= new Map()
 STORE.ctx ??= null
 STORE.booted ??= false
 const SESSION_PARENTS = STORE.SESSION_PARENTS
@@ -153,6 +156,18 @@ const SPOOL_MEMORY = STORE.SPOOL_MEMORY
 // Root sessions sitting in a finished state whose TUI client we still expect to
 // exit; watched by watchClientExit().
 const WAITING_EXIT = STORE.WAITING_EXIT
+// Last non-terminal spooled event per root session; heartbeat() re-asserts it.
+const LAST_SPOOL = STORE.lastSpool
+
+// Spool files can be lost (TTL sweep in the Tabby plugin, a paused Tabby
+// window) and a killed TUI client never sends SessionEnd, so every live
+// session re-spools its last state periodically. 0 disables the heartbeat.
+const HEARTBEAT_MS = (() => {
+  const raw = Number(process.env.TABBY_STATUS_HEARTBEAT_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 60_000
+})()
+// Stop re-asserting sessions whose last event is older than this.
+const HEARTBEAT_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
 function rootSession(sessionID) {
   let cur = sessionID
@@ -200,11 +215,18 @@ function ensureSessionInfo(sessionID) {
   Promise.resolve()
     .then(() => ctx.session.get({ sessionID }))
     .then((info) => {
-      if (!info?.id) return
+      if (!info?.id) {
+        // Retry next time: a transient failure must not hide the title (and
+        // with it the tab routing) for the rest of the process lifetime.
+        STORE.infoLookedUp.delete(sessionID)
+        return
+      }
       if (info.parentID) SESSION_PARENTS.set(info.id, info.parentID)
       if (info.title) SESSION_TITLE.set(info.id, info.title)
     })
-    .catch(() => {})
+    .catch(() => {
+      STORE.infoLookedUp.delete(sessionID)
+    })
 }
 
 // Every live TUI bound to a session (`opencode ... -s <id>`) owns one tab.
@@ -410,6 +432,19 @@ function spool(claudeEvent, sessionID, extra) {
     } else if (claudeEvent !== "SessionEnd") {
       WAITING_EXIT.delete(key)
     }
+    // Remember the last non-terminal state so heartbeat() can re-assert it;
+    // SessionEnd clears it so an exited session is not resurrected.
+    if (claudeEvent === "SessionEnd") {
+      LAST_SPOOL.delete(key)
+    } else {
+      LAST_SPOOL.set(key, {
+        event: claudeEvent,
+        ts: status.ts,
+        clientPids,
+        ancestors: status.ancestors,
+        cwd: status.cwd,
+      })
+    }
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
     const rand = Math.random().toString(36).slice(2, 8)
     const finalFile = path.join(SPOOL_DIR, `${status.ts}-${process.pid}-${rand}.json`)
@@ -469,6 +504,32 @@ function watchClientExit() {
     WAITING_EXIT.delete(key)
     spool("SessionEnd", key, { ancestors: mem.ancestors, cwd: mem.cwd })
     show("idle", key)
+  }
+}
+
+// Self-heal for updates Tabby never saw (TTL sweep, paused window) and for
+// TUI clients killed without a SessionEnd: re-spool each live session's last
+// state and clear the tab once its client is gone. Pids and ancestors are
+// reused from spool time — a rescan cannot tell a dead client from a live
+// bare TUI in the same directory.
+function heartbeat() {
+  const now = Date.now()
+  for (const [key, entry] of [...LAST_SPOOL]) {
+    if (!entry) {
+      LAST_SPOOL.delete(key)
+      continue
+    }
+    if (entry.clientPids?.length && !entry.clientPids.some(pidAlive)) {
+      LAST_SPOOL.delete(key)
+      WAITING_EXIT.delete(key)
+      spool("SessionEnd", key, { ancestors: entry.ancestors, cwd: entry.cwd })
+      continue
+    }
+    if (now - entry.ts > HEARTBEAT_MAX_AGE_MS) {
+      LAST_SPOOL.delete(key)
+      continue
+    }
+    spool(entry.event, key, { ancestors: entry.ancestors, cwd: entry.cwd })
   }
 }
 
@@ -665,6 +726,20 @@ export default {
     }, 3000)
     exitTimer.unref?.()
 
+    // Re-assert live sessions (see heartbeat): a lost or swept spool file would
+    // otherwise leave the tab stuck on its last status forever.
+    let heartbeatTimer = null
+    if (HEARTBEAT_MS > 0) {
+      heartbeatTimer = setInterval(() => {
+        try {
+          heartbeat()
+        } catch {
+          // best-effort
+        }
+      }, HEARTBEAT_MS)
+      heartbeatTimer.unref?.()
+    }
+
     let stopped = false
     const events = ctx.event.subscribe()
     const loop = (async () => {
@@ -685,6 +760,7 @@ export default {
     const dispose = async () => {
       stopped = true
       clearInterval(exitTimer)
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
       try {
         const closer = events?.return
         if (typeof closer === "function") await closer.call(events)

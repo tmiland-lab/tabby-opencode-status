@@ -107,6 +107,10 @@ const titles = new Set()
 for (const f of files) {
   const s = JSON.parse(await fs.promises.readFile(path.join(spoolDir, f), "utf8"))
   if (!s.event || !s.session || !Array.isArray(s.ancestors)) fail(`bad spool shape in ${f}`)
+  // setup() sweeps live `-s` TUIs on the machine (scanBoundSessions) and spools
+  // SessionStart for them; those files carry real client ancestry by design.
+  // Only the smoke sessions are known to be clientless.
+  if (!s.session.startsWith("ses_smoke")) continue
   // The smoke session has no TUI client, so no ancestry may be emitted at all:
   // with none, the bridge can never misroute the file to an unrelated tab.
   if (s.ancestors.length) fail(`ancestry leaked into clientless ${f}: ${JSON.stringify(s.ancestors)}`)
