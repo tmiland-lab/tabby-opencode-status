@@ -17,7 +17,10 @@ import { OpencodeStatusDecorator, TabLike } from "../decorator/opencodeStatusDec
 import { chooseTabsForSession, DEFAULT_CONFIG, hasOpencodeProcess, OPENCODE_CMD_RE, TabbyOpencodeStatusConfig } from "../interfaces/types"
 import { OpencodeSessionRecord, SessionTracker } from "./sessionTracker"
 
-const DEBUG_FILE = path.join(os.tmpdir(), "tabby-opencode-status.debug.json")
+// Per-window file: each Tabby window runs its own bridge instance, and a
+// shared name had them clobber each other's route log (misleading when
+// debugging a specific window). Readers can glob debug-*.json.
+const DEBUG_FILE = path.join(os.tmpdir(), `tabby-opencode-status.debug-${process.pid}.json`)
 
 interface RouteRecord {
   ts: number

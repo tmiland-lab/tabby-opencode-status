@@ -39,6 +39,8 @@
 //   TABBY_STATUS_BELL=1          bell on done/error
 //   TABBY_STATUS_SPOOL_DIR=...   override spool dir (default $TMPDIR/tabby-claude-status.d)
 //   TABBY_STATUS_HEARTBEAT_MS=N  status re-assert interval (default 60000, 0 = off)
+//   TABBY_STATUS_SILENCE_MS=N    downgrade stale "working" after N ms (default 300000, 0 = off)
+//   TABBY_STATUS_QUESTION_HOLD_MS=N  keep a fresh question from a racing step.started (default 5000)
 
 import fs from "node:fs"
 import os from "node:os"
@@ -130,6 +132,9 @@ const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
   doneTimers: new Map(),
   infoLookedUp: new Set(),
   lastSpool: new Map(),
+  lastEventAt: new Map(),
+  lastAsk: new Map(),
+  active: new Set(),
   ctx: null,
   booted: false,
   dispose: null,
@@ -140,6 +145,9 @@ const STORE = (globalThis[Symbol.for("opencode-tabby-status.store")] ??= {
 STORE.doneTimers ??= new Map()
 STORE.infoLookedUp ??= new Set()
 STORE.lastSpool ??= new Map()
+STORE.lastEventAt ??= new Map()
+STORE.lastAsk ??= new Map()
+STORE.active ??= new Set()
 STORE.ctx ??= null
 STORE.booted ??= false
 const SESSION_PARENTS = STORE.SESSION_PARENTS
@@ -158,6 +166,19 @@ const SPOOL_MEMORY = STORE.SPOOL_MEMORY
 const WAITING_EXIT = STORE.WAITING_EXIT
 // Last non-terminal spooled event per root session; heartbeat() re-asserts it.
 const LAST_SPOOL = STORE.lastSpool
+// Last real event time per root session (heartbeat re-asserts do not count).
+// A "working" state older than SILENCE_MS means the turn ended without a
+// terminal event (v2 sometimes omits execution.succeeded) or died mid-turn:
+// the heartbeat downgrades it instead of re-asserting a spinner forever.
+const LAST_EVENT_AT = STORE.lastEventAt
+// When the last question/permission ask was raised per root session. The ask's
+// spool entry gets its timestamp refreshed by every heartbeat re-assert, so the
+// question-hold guard needs the original ask time stored separately.
+const LAST_ASK = STORE.lastAsk
+// Root sessions with an execution currently running (started/step seen, no
+// terminal event yet). Gates late replies so answering a prompt of a session
+// that already ended cannot stamp "working" onto it again.
+const ACTIVE = STORE.active
 
 // Spool files can be lost (TTL sweep in the Tabby plugin, a paused Tabby
 // window) and a killed TUI client never sends SessionEnd, so every live
@@ -168,6 +189,19 @@ const HEARTBEAT_MS = (() => {
 })()
 // Stop re-asserting sessions whose last event is older than this.
 const HEARTBEAT_MAX_AGE_MS = 12 * 60 * 60 * 1000
+// "working" with no real events for this long is stale: heartbeat() downgrades
+// it to done instead of re-asserting the spinner. 0 disables the heal.
+const SILENCE_MS = (() => {
+  const raw = Number(process.env.TABBY_STATUS_SILENCE_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 5 * 60_000
+})()
+// A question/permission ask is the newest state; a step.started within this
+// window of the ask is the same step racing its own ask — keep the question.
+// A step starting later means the answer arrived; progress wins again.
+const QUESTION_HOLD_MS = (() => {
+  const raw = Number(process.env.TABBY_STATUS_QUESTION_HOLD_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 5_000
+})()
 
 function rootSession(sessionID) {
   let cur = sessionID
@@ -363,7 +397,16 @@ let lastDiagWrite = 0
 function recordEvent(type, data) {
   try {
     const session = data?.sessionID || data?.form?.sessionID || ""
-    const key = `${type}:${session.slice(0, 14)}`
+    // Tool name in the key: the `d.name === "question"` match below is an
+    // assumption about the v2 event shape that has not been verified against
+    // real events — the counts make the actual field/name visible in the dump.
+    const rawTool = data?.name ?? data?.tool?.name ?? data?.tool
+    const tool =
+      (type === "session.tool.input.started" || type === "session.tool.called") &&
+      typeof rawTool === "string"
+        ? `:${rawTool}`
+        : ""
+    const key = `${type}${tool}:${session.slice(0, 14)}`
     EVENT_COUNTS.set(key, (EVENT_COUNTS.get(key) || 0) + 1)
     const noisy = NOISY_EVENT.test(type)
     if (!noisy) {
@@ -376,7 +419,7 @@ function recordEvent(type, data) {
     lastDiagWrite = now
     const counts = {}
     for (const [k, v] of EVENT_COUNTS) counts[k] = v
-    fs.writeFileSync(EVENT_LOG_FILE, JSON.stringify({ ts: now, events: EVENT_LOG, counts }))
+    fs.writeFileSync(EVENT_LOG_FILE, JSON.stringify({ ts: now, build: "2026-10-16b", events: EVENT_LOG, counts }))
   } catch {
     // diagnostics are best-effort
   }
@@ -436,6 +479,9 @@ function spool(claudeEvent, sessionID, extra) {
     // SessionEnd clears it so an exited session is not resurrected.
     if (claudeEvent === "SessionEnd") {
       LAST_SPOOL.delete(key)
+      LAST_EVENT_AT.delete(key)
+      LAST_ASK.delete(key)
+      ACTIVE.delete(key)
     } else {
       LAST_SPOOL.set(key, {
         event: claudeEvent,
@@ -517,17 +563,51 @@ function heartbeat() {
   for (const [key, entry] of [...LAST_SPOOL]) {
     if (!entry) {
       LAST_SPOOL.delete(key)
+      LAST_EVENT_AT.delete(key)
+      LAST_ASK.delete(key)
+      ACTIVE.delete(key)
       continue
     }
     if (entry.clientPids?.length && !entry.clientPids.some(pidAlive)) {
       LAST_SPOOL.delete(key)
+      LAST_EVENT_AT.delete(key)
+      LAST_ASK.delete(key)
+      ACTIVE.delete(key)
       WAITING_EXIT.delete(key)
       spool("SessionEnd", key, { ancestors: entry.ancestors, cwd: entry.cwd })
       continue
     }
     if (now - entry.ts > HEARTBEAT_MAX_AGE_MS) {
       LAST_SPOOL.delete(key)
+      LAST_EVENT_AT.delete(key)
+      LAST_ASK.delete(key)
+      ACTIVE.delete(key)
       continue
+    }
+    // Silence self-heal: a "working" tab whose session emitted nothing for
+    // SILENCE_MS is stale (turn ended without a terminal event, daemon died
+    // mid-turn). Downgrade it to done instead of re-asserting the spinner.
+    // Sessions first seen here (this instance reloaded after their last event)
+    // start the window now — entry.ts is refreshed by every re-assert and
+    // would otherwise never age past the window.
+    if (SILENCE_MS > 0 && entry.event === "PreToolUse") {
+      let last = LAST_EVENT_AT.get(key)
+      if (last === undefined) {
+        last = now
+        LAST_EVENT_AT.set(key, now)
+      }
+      if (now - last > SILENCE_MS) {
+        LAST_SPOOL.set(key, {
+          event: "Stop",
+          ts: now,
+          clientPids: entry.clientPids,
+          ancestors: entry.ancestors,
+          cwd: entry.cwd,
+        })
+        spool("Stop", key, { ancestors: entry.ancestors, cwd: entry.cwd })
+        show("done", key)
+        continue
+      }
     }
     spool(entry.event, key, { ancestors: entry.ancestors, cwd: entry.cwd })
   }
@@ -569,21 +649,54 @@ export function handle(ev) {
   const dir = ev?.location?.directory
   if (dir && d.sessionID) SESSION_DIR.set(d.sessionID, dir)
   recordEvent(t, d)
+  // Liveness bookkeeping per root session: every real event refreshes the
+  // timestamp (heartbeat re-asserts do not), prevEventAt is the time before
+  // this event so the reply gate below can judge whether a session was alive.
+  const rootId = d.sessionID ? rootSession(d.sessionID) || d.sessionID : ""
+  const prevEventAt = rootId ? LAST_EVENT_AT.get(rootId) : undefined
+  if (rootId) LAST_EVENT_AT.set(rootId, Date.now())
   // Agent-run lifecycle: the reliable V2 status source. `session.status` is
   // not emitted for ordinary turns, so map the execution/step events instead.
   if (t === "session.execution.started") {
+    if (rootId) ACTIVE.add(rootId)
     cancelDone(d.sessionID)
     show("working", d.sessionID)
     spool("PreToolUse", d.sessionID)
     return
   }
   if (t === "session.execution.succeeded" || t === "session.execution.interrupted") {
+    if (rootId) ACTIVE.delete(rootId)
     cancelDone(d.sessionID)
     show("done", d.sessionID)
     spool("Stop", d.sessionID)
     return
   }
   if (t === "session.step.started") {
+    if (rootId) ACTIVE.add(rootId)
+    // A step.started racing the ask that opened it is the same step announcing
+    // itself again — keep the question. A step starting later means the answer
+    // arrived; progress wins again.
+    const askedAt = rootId ? LAST_ASK.get(rootId) : undefined
+    const holdsQuestion =
+      askedAt !== undefined && Date.now() - askedAt < QUESTION_HOLD_MS
+    if (!holdsQuestion) {
+      cancelDone(d.sessionID)
+      show("working", d.sessionID)
+      spool("PreToolUse", d.sessionID)
+    }
+    return
+  }
+  if (t === "session.text.started" || t === "session.reasoning.started") {
+    // Streaming resumed (inbox delivery, retry): covers turns that never emit
+    // step.started — without this the tab stays "done" while the model thinks.
+    cancelDone(d.sessionID)
+    show("working", d.sessionID)
+    spool("PreToolUse", d.sessionID)
+    return
+  }
+  if (t === "session.inbox.enqueued" || t === "session.inbox.delivered") {
+    // User sent a message: the daemon emits no status change until the turn
+    // actually starts, so drive "working" from the inbox event itself.
     cancelDone(d.sessionID)
     show("working", d.sessionID)
     spool("PreToolUse", d.sessionID)
@@ -610,12 +723,14 @@ export function handle(ev) {
       show("working", d.sessionID)
       spool("PreToolUse", d.sessionID)
     } else if (s === "idle") {
+      if (rootId) ACTIVE.delete(rootId)
       show("done", d.sessionID)
       spool("Stop", d.sessionID)
     }
     return
   }
   if (t === "session.idle") {
+    if (rootId) ACTIVE.delete(rootId)
     cancelDone(d.sessionID)
     show("done", d.sessionID)
     spool("Stop", d.sessionID)
@@ -642,53 +757,88 @@ export function handle(ev) {
     spool("SessionEnd", id, mem ? { ancestors: mem.ancestors, cwd: mem.cwd } : undefined)
     show("idle", id)
     WAITING_EXIT.delete(key)
+    LAST_EVENT_AT.delete(key)
+    LAST_ASK.delete(key)
+    ACTIVE.delete(key)
     SESSION_PARENTS.delete(id)
     SESSION_TITLE.delete(id)
     return
   }
   if (t === "permission.asked") {
     const id = d.sessionID || ""
+    if (rootId) LAST_ASK.set(rootId, Date.now())
+    // An ask is fresh activity: cancel a pending fallback-done so it cannot
+    // clobber the question a few seconds later.
+    cancelDone(id)
     show("question", id)
     spool("PermissionRequest", id)
     return
   }
   if (t === "permission.replied") {
-    // Without this the tab stays stuck on "question" after you answer.
+    // Without this the tab stays stuck on "question" after you answer. But a
+    // late reply (daemon restart orphaned the prompt, session already gone)
+    // must not stamp "working" onto an ended session: only resume when the
+    // execution is still active or the session was alive moments ago.
     const id = d.sessionID || ""
-    show("working", id)
-    spool("PreToolUse", id)
+    if (rootId) LAST_ASK.delete(rootId)
+    const fresh = prevEventAt !== undefined && Date.now() - prevEventAt < 120_000
+    if ((rootId && ACTIVE.has(rootId)) || fresh) {
+      cancelDone(id)
+      show("working", id)
+      spool("PreToolUse", id)
+    } else {
+      show("done", id)
+      spool("Stop", id)
+    }
     return
   }
   if (t === "session.tool.input.started" && d.name === "question") {
     // V2 emits no form.created for the question tool (the event exists in the
     // schema but has zero emissions), so drive the question status from the
     // tool call itself. Without this the tab keeps showing the previous status
-    // (e.g. "working") while the question waits for an answer.
+    // (e.g. "working") while the question waits for an answer. NOTE: `d.name`
+    // is an assumption about the event shape — the diag dump's tool-name keys
+    // prove or disprove it on the next real question.
     const id = d.sessionID || ""
+    if (rootId) LAST_ASK.set(rootId, Date.now())
+    cancelDone(id)
     show("question", id)
     spool("PermissionRequest", id)
     return
   }
   if (t === "form.created") {
     const id = d.form?.sessionID || d.sessionID || ""
+    if (rootId) LAST_ASK.set(rootId, Date.now())
+    cancelDone(id)
     show("question", id)
     spool("PermissionRequest", id)
     return
   }
   if (t === "form.replied") {
     const id = d.sessionID || ""
-    show("working", id)
-    spool("PreToolUse", id)
+    if (rootId) LAST_ASK.delete(rootId)
+    const fresh = prevEventAt !== undefined && Date.now() - prevEventAt < 120_000
+    if ((rootId && ACTIVE.has(rootId)) || fresh) {
+      cancelDone(id)
+      show("working", id)
+      spool("PreToolUse", id)
+    } else {
+      show("done", id)
+      spool("Stop", id)
+    }
     return
   }
   if (t === "form.cancelled") {
     const id = d.sessionID || ""
+    if (rootId) LAST_ASK.delete(rootId)
+    cancelDone(id)
     show("working", id)
     spool("PreToolUse", id)
     return
   }
   if (t === "session.execution.failed") {
     const id = d.sessionID || ""
+    if (rootId) ACTIVE.delete(rootId)
     cancelDone(id)
     show("error", id)
     spool("PostToolUseFailure", id)

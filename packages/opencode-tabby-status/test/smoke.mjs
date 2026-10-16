@@ -8,6 +8,11 @@ import path from "node:path"
 
 const spoolDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "tabby-status-test-"))
 process.env.TABBY_STATUS_SPOOL_DIR = spoolDir
+// Fast timers so the suite exercises the heartbeat without minutes of waiting:
+// silence heal at 2s, question hold at 1s, heartbeat tick every 150ms.
+process.env.TABBY_STATUS_HEARTBEAT_MS = "150"
+process.env.TABBY_STATUS_SILENCE_MS = "2000"
+process.env.TABBY_STATUS_QUESTION_HOLD_MS = "1000"
 
 // Controllable async iterable standing in for ctx.event.subscribe().
 function createEventSource() {
@@ -138,6 +143,40 @@ if (!(await read("ses_smokeq", "PermissionRequest"))) {
 if (await read("ses_smokenotq", "PermissionRequest")) {
   fail("non-question tool input spooled PermissionRequest")
 }
+
+// Turns do not always start with a step: a queued message and the text/
+// reasoning stream starting are the first signs of activity, and without them
+// the tab sits on "done" while the model is already thinking.
+handle({ type: "session.inbox.enqueued", data: { sessionID: "ses_smokeinbox" } })
+if (!(await read("ses_smokeinbox", "PreToolUse"))) fail("inbox.enqueued did not spool working")
+handle({ type: "session.text.started", data: { sessionID: "ses_smoketext" } })
+if (!(await read("ses_smoketext", "PreToolUse"))) fail("text.started did not spool working")
+handle({ type: "session.reasoning.started", data: { sessionID: "ses_smokereason" } })
+if (!(await read("ses_smokereason", "PreToolUse"))) fail("reasoning.started did not spool working")
+
+// A step.started racing the ask that opened it must not overwrite the
+// question; once the hold window passes, a step is real progress and wins.
+handle({ type: "session.tool.input.started", data: { sessionID: "ses_smokehold", name: "question" } })
+handle({ type: "session.step.started", data: { sessionID: "ses_smokehold" } })
+if (!(await read("ses_smokehold", "PermissionRequest"))) fail("hold: question not spooled")
+if (await read("ses_smokehold", "PreToolUse")) fail("fresh question was overwritten by step.started")
+await new Promise((r) => setTimeout(r, 1100))
+handle({ type: "session.step.started", data: { sessionID: "ses_smokehold" } })
+if (!(await read("ses_smokehold", "PreToolUse"))) fail("step.started after the hold window did not resume working")
+
+// Silence self-heal: a "working" session with no events for SILENCE_MS is
+// stale and must be downgraded to done; one with recent activity must not.
+handle({ type: "session.execution.started", data: { sessionID: "ses_smokesilent" } })
+handle({ type: "session.execution.started", data: { sessionID: "ses_smokelive" } })
+await new Promise((r) => setTimeout(r, 1500))
+handle({ type: "session.step.started", data: { sessionID: "ses_smokelive" } })
+let silentStop = null
+for (let i = 0; i < 60 && !silentStop; i++) {
+  await new Promise((r) => setTimeout(r, 50))
+  silentStop = await read("ses_smokesilent", "Stop")
+}
+if (!silentStop) fail("stale working session was not downgraded to done")
+if (await read("ses_smokelive", "Stop")) fail("live session was downgraded despite fresh events")
 
 // Regression: an exact `-s <sessionID>` client must win over the bare-TUI cwd
 // fallback, otherwise every bare `opencode` in the same directory (e.g. an
